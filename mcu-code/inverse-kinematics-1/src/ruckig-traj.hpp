@@ -10,9 +10,9 @@ inline OutputParameter<DOFs> output;
 
 inline void setupRuckig() 
 {
-    input.max_velocity = {1.0, 1.0};       
-    input.max_acceleration = {3, 3}; 
-    input.max_jerk = {5.5,5.5};         
+    input.max_velocity = {0.25, 0.25};       
+    input.max_acceleration = {2.0, 2.0}; 
+    input.max_jerk = {25.0,25.0};         
 
     input.current_position = {0.0, 0.0};
     input.current_velocity = {0.0, 0.0};

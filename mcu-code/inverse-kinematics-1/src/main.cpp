@@ -21,6 +21,9 @@ Pose        currentPoseCart, targetPoseCart, targetPoseIntermediateCart;
 TrigCache   trigCache1, trigCache2;
 int         invKinItrTracker{0};
 
+int32_t     j1_commanded_steps = 0;
+int32_t     j2_commanded_steps = 0;
+
 void setup()
 {   
     Serial.begin(115200);
@@ -54,6 +57,8 @@ void setup()
     stepper1->moveTo(15*J1_STEPS_PER_DEG);
     stepper2->moveTo(15*J2_STEPS_PER_DEG);
     delay(500); // Wait for the motors to reach the initial position so theyre not starting near singularity
+    j1_commanded_steps = stepper1->getPositionAfterCommandsCompleted();
+    j2_commanded_steps = stepper2->getPositionAfterCommandsCompleted();
     stepper1->setSpeedInHz(30000);      
     stepper1->setAcceleration(10000000); 
     stepper2->setSpeedInHz(30000);      
@@ -115,6 +120,7 @@ void loop()
             while(Serial.read() != '\n' && Serial.available()) {} 
             targetPoseCart.x = target_x;
             targetPoseCart.y = target_y;
+            // stepper2->moveTimed(target_x, target_y, NULL, true); // Placeholder for testing, replace with actual Ruckig handling
             degToRad(currentPoseJ);
             evalTrig(currentPoseJ, trigCache1);
             handleRuckigTargetUpdate(targetPoseCart, trigCache1);
@@ -123,17 +129,9 @@ void loop()
         }
     }
     
-    unsigned long loopStartTime = micros();
-    
-    handleRuckigLoop();
-    t += 0.005f; 
-
-    // Wait for exactly 5ms (5000 us) to pass since loopStartTime
-    while (micros() - loopStartTime < 5000) {
-        // Yield to let ESP32 handle WiFi/background tasks if needed
-        yield(); 
+    if (stepper1->queueEntries() < 10 || stepper2->queueEntries() < 10) {
+        handleRuckigLoop();
     }
-
 
 
 
@@ -151,50 +149,40 @@ void loop()
 
 
 
-void handleRuckigLoop()
-{
-    // Loop following
-    // ruck.update()
-    ruck.update(input,output);
-    
-    
-    // Get output.new_pose
-    targetPoseIntermediateCart.x = output.new_position[0];
-    targetPoseIntermediateCart.y = output.new_position[1];
-    // run inv kinematics to get target joint angles for that tcp pose
+void handleRuckigLoop() {  
+    uint32_t duration_ticks = (TICKS_PER_S / 1000) * 5;   
+  
+    // 1. Advance Ruckig  
+    ruck.update(input, output);  
+    targetPoseIntermediateCart.x = output.new_position[0];  
+    targetPoseIntermediateCart.y = output.new_position[1];  
+
     currentPoseJ.q1 = stepper1-> getCurrentPosition() / J1_STEPS_PER_DEG;
     currentPoseJ.q2 = stepper2-> getCurrentPosition() / J2_STEPS_PER_DEG;
-    getInverseKinematics(currentPoseJ, &targetPoseIntermediateCart, &targetPoseIntermediateJ,invKinItrTracker, trigCache1);
-
-    // 1. Get the current and target steps for Joint 1
-    long current_steps_1 = stepper1->getCurrentPosition();
-    long target_steps_1 = targetPoseIntermediateJ.q1 * J1_STEPS_PER_DEG;
-    long steps_to_go_1 = target_steps_1 - current_steps_1;
-
-    long current_steps_2    = stepper2->getCurrentPosition();
-    long target_steps_2     = targetPoseIntermediateJ.q2 * J2_STEPS_PER_DEG;
-    long steps_to_go_2      = target_steps_2 - current_steps_2;
-
-    // 2. Calculate required speed to arrive in exactly 5ms (0.005s)
-    // Dividing by 0.005 is the same as multiplying by 200
-    uint32_t required_hz_1 = abs(steps_to_go_1) * 200;
-    uint32_t required_hz_2 = abs(steps_to_go_2) * 200;
-
-    // 3. Command the motor (Only update if it actually needs to move)
-    if (required_hz_1 > 0) {
-        stepper1->setSpeedInHz(required_hz_1);
-        stepper1->moveTo(target_steps_1);
-    }
-    if (required_hz_2 > 0) {
-        stepper2->setSpeedInHz(required_hz_2);
-        stepper2->moveTo(target_steps_2);
-    }
-
-
-
+    getInverseKinematics(currentPoseJ, &targetPoseIntermediateCart, &targetPoseIntermediateJ, invKinItrTracker, trigCache1);  
     std::cout << t << "," << targetPoseIntermediateJ.q1 << "," << targetPoseIntermediateJ.q2 <<  "," << output.new_velocity[0] << "," << output.new_velocity[1] << "," << output.new_acceleration[0] << "," << output.new_acceleration[1] << std::endl;
-
-    output.pass_to_input(input);
-    // move steppers to those joint angles using moveto
-    // wait(non blocking) for 5ms. 
+    t+=0.005;
+    // 2. Calculate deltas  
+    int32_t new_target_steps_1 = targetPoseIntermediateJ.q1 * J1_STEPS_PER_DEG;  
+    int32_t new_target_steps_2 = targetPoseIntermediateJ.q2 * J2_STEPS_PER_DEG;  
+    int16_t delta_1 = new_target_steps_1 - j1_commanded_steps;  
+    int16_t delta_2 = new_target_steps_2 - j2_commanded_steps;  
+  
+    // 3. Queue moves with start=false to prepare for sync  
+    MoveTimedResultCode r1 = stepper1->moveTimed(delta_1, duration_ticks, NULL, false);  
+    MoveTimedResultCode r2 = stepper2->moveTimed(delta_2, duration_ticks, NULL, false);  
+  
+    // 4. Only update trackers and start if BOTH were accepted  
+    if (r1 <= MOVE_TIMED_OK && r2 <= MOVE_TIMED_OK) {  
+        j1_commanded_steps += delta_1;  
+        j2_commanded_steps += delta_2;  
+        output.pass_to_input(input);  
+  
+        // Synchronized trigger  
+        noInterrupts();  
+        stepper1->moveTimed(0, 0, NULL, true);  
+        stepper2->moveTimed(0, 0, NULL, true);  
+        interrupts();  
+    }   
+    // If BUSY, we don't call pass_to_input, so Ruckig will retry the same step next loop  
 }

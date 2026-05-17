@@ -39,12 +39,12 @@ extern TMC2209Stepper J2_driver;
 #define J2_CURRENT 1400
 
 
-#define J1_HOLD_MULTIPLIER 0.3
-#define J2_HOLD_MULTIPLIER 0.3
+#define J1_HOLD_MULTIPLIER 0.6
+#define J2_HOLD_MULTIPLIER 0.6
 
 
-#define J1_TPWMTHRS 0
-#define J2_TPWMTHRS 0
+#define J1_TPWMTHRS 1000
+#define J2_TPWMTHRS 1000
 
 
 #define J1_MICOSTEPS 8
