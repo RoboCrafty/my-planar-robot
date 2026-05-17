@@ -4,65 +4,22 @@
 #include "motor_init.h"
 #include <math.h>
 #include <ArduinoEigen.h>
-#include <ruckig/ruckig.hpp>
 #include <kinematics.hpp>
-
-using namespace ruckig;
-const int DOFs = 2;
-
-// 1. Initialize Ruckig with a 1ms control cycle (0.001 seconds)
-// The '8' is the maximum number of waypoints you plan to send at once
-Ruckig<DOFs> ruck(0.01);
-InputParameter<DOFs> input;
-OutputParameter<DOFs> output;
+#include <ruckig-traj.hpp>
 
 
-const int TRAJECTORY_STEPS = 200; // 30 points for 30mm (1mm resolution)
-
-struct Waypoint {
-  float j1_angle;
-  float j2_angle;
-};
-Waypoint path[TRAJECTORY_STEPS];
-
-
-// ================= UART PINS =================
+// ================= UART PINS AND OTHER VARIABLES =================
 #define TMC2_RX 16
 #define TMC2_TX 17
+void handleRuckigLoop();
 
-void setupRuckig() {
-    // 1. ALL MATH IS NOW IN "REVOLUTIONS" INSTEAD OF DEGREES
-    // 650 deg/s / 360 = 1.8 rev/s
-    input.max_velocity = {1.8, 1.8};       
-    
-    // 3000 deg/s^2 / 360 = 8.3 rev/s^2
-    input.max_acceleration = {2.3, 2.3}; 
-    
-    // 30000 deg/s^3 / 360 = 83.3 rev/s^3
-    input.max_jerk = {20.3,23.3};         
 
-    input.current_position = {0.0, 0.0};
-    input.current_velocity = {0.0, 0.0};
-    input.current_acceleration = {0.0, 0.0};
-
-    // 3600 degrees / 360 = 10 Revolutions!
-    input.target_position = {0.0, 0.0};
-    input.target_velocity = {0.0, 0.0}; 
-    input.target_acceleration = {0.0, 0.0};
-    
-    input.synchronization = Synchronization::Time;
-
-    // Validation Check...
-    try {
-        ruck.validate_input(input);
-        Serial.println("Ruckig Input Validation: SUCCESS");
-    } catch (const std::exception& e) {
-        Serial.print("FATAL RUCKIG ERROR: ");
-        Serial.println(e.what());
-        while (true) delay(1000);
-    }
-}
-
+// Goal here is, we feed current Joint position, which gives us current TCP position using FW Kin, we then generate a smooth jerk limited trajectory with Rucking in cartesian space
+// Then convert that to joint space with the numerical inverse kinematics solver
+Joints      currentPoseJ, targetPoseIntermediateJ, resultInvKin;
+Pose        currentPoseCart, targetPoseCart, targetPoseIntermediateCart;
+TrigCache   trigCache1, trigCache2;
+int         invKinItrTracker{0};
 
 void setup()
 {   
@@ -75,61 +32,72 @@ void setup()
     delay(100);
 
     initJoints(1, 1, 1); 
+    initTrigTable(); // Initialize the sine lookup table
+    setupRuckig(); 
 
 
     engine.init();
     stepper1 = engine.stepperConnectToPin(J1_STEP_PIN);
     stepper1->setDirectionPin(J1_DIR_PIN, true);
     stepper1->setAutoEnable(true);
-    stepper1->setSpeedInHz(1000);      
-    stepper1->setAcceleration(6000);     
+    stepper1->setSpeedInHz(6000);      
+    stepper1->setAcceleration(6000); // To ignore stepper library motion profile and use ruckig's profile instead
 
 
     stepper2 = engine.stepperConnectToPin(J2_STEP_PIN);
     stepper2->setDirectionPin(J2_DIR_PIN, true);
     stepper2->setAutoEnable(true);
-    stepper2->setSpeedInHz(1000);      
-    stepper2->setAcceleration(5000); 
+    stepper2->setSpeedInHz(6000);      
+    stepper2->setAcceleration(6000); 
     // stepper2->runBackward();
 
     stepper1->moveTo(15*J1_STEPS_PER_DEG);
     stepper2->moveTo(15*J2_STEPS_PER_DEG);
-    Joints startConfig = {45, 45};
-    Joints result;
-    pose targetPose = {0.078033, 0.1311};
-    initTrigTable(); // Initialize the sine lookup table
-    // start time to calculate IK
-    unsigned long startTime = micros(); // Record start time in microseconds
-    int itr_counter;
-    getInverseKinematics(startConfig, targetPose, result, itr_counter);
-    unsigned long endTime = micros();   // Record end time in microseconds
+    delay(500); // Wait for the motors to reach the initial position so theyre not starting near singularity
+    stepper1->setSpeedInHz(30000);      
+    stepper1->setAcceleration(10000000); 
+    stepper2->setSpeedInHz(30000);      
+    stepper2->setAcceleration(10000000); 
+    
+    // // start time to calculate IK
+    // unsigned long startTime = micros(); // Record start time in microseconds
+    // int itr_counter;
+    // unsigned long endTime = micros();   // Record end time in microseconds
 
-    unsigned long duration = endTime - startTime;
+    // unsigned long duration = endTime - startTime;
 
-    // Print the result in microseconds, or convert to milliseconds as a float
-    Serial.printf("IK Calculation Time: %lu us\n", duration);
-    Serial.printf("IK Calculation Time: %.6f ms\n", (float)duration / 1000.0);
-    Serial.printf("Final Joint Angles: q1 = %f, q2 = %f\n", result.q1, result.q2);
-    Serial.printf("Iterations: %d\n", itr_counter);
+    // // Print the result in microseconds, or convert to milliseconds as a float
+    // Serial.printf("IK Calculation Time: %lu us\n", duration);
+    // Serial.printf("IK Calculation Time: %.6f ms\n", (float)duration / 1000.0);
+    // Serial.printf("Final Joint Angles: q1 = %f, q2 = %f\n", result.q1, result.q2);
+    // Serial.printf("Iterations: %d\n", itr_counter);
+
+    // Define 1 target trajectory i.e, move 10cm left from current position in cartesian space in a straight line
+    currentPoseJ.q1 = stepper1-> getCurrentPosition() / J1_STEPS_PER_DEG;
+    currentPoseJ.q2 = stepper2-> getCurrentPosition() / J2_STEPS_PER_DEG;
+    Serial.println("Current Joint Angles: q1 = " + String(currentPoseJ.q1) + ", q2 = " + String(currentPoseJ.q2));
+    degToRad(currentPoseJ);
+    evalTrig(currentPoseJ, trigCache1);
+
+    // Calculate target pose in C space
+    ForwardKinematics(trigCache1, targetPoseCart);
+    Serial.println("Current Cartesian Position: x = " + String(targetPoseCart.x) + ", y = " + String(targetPoseCart.y));
+    targetPoseCart.x -= 0.30; // Move 9 cm left
+    Serial.println("Target Cartesian Position: x = " + String(targetPoseCart.x) + ", y = " + String(targetPoseCart.y));
+    handleRuckigTargetUpdate(targetPoseCart, trigCache1);
+
+
+
 }
 
 
 String inputString = "";
 
-float j1_angle = 0;
-float j2_angle = 0;
-
-// Joint limits
-const float J1_MIN = -180;
-const float J1_MAX = 360;
-
-const float J2_MIN = -180;
-const float J2_MAX = 360;
-
-float t = 0;
 Result res;
 Joints startConfig = {0, 0}; 
 int itr_counter = 0;
+float t=0;
+
 void loop() 
 {
     // Wait for incoming serial data from Python
@@ -145,29 +113,88 @@ void loop()
             
             // Consume the closing bracket or newline
             while(Serial.read() != '\n' && Serial.available()) {} 
-
-            // Create our target pose
-            pose targetPose = {target_x, target_y};
-            
-            // Run the incredibly fast IK solver!
-            Joints result;
-            // You can set this to the current joint angles if you have that info
-            startConfig.q1 = stepper1->getCurrentPosition() / J1_STEPS_PER_DEG;
-            startConfig.q2 = stepper2->getCurrentPosition() / J2_STEPS_PER_DEG;
-            Serial.printf("Current Joint Angles: q1 = %f, q2 = %f\n", startConfig.q1, startConfig.q2);
-            unsigned long startTime = micros();
-            getInverseKinematics(startConfig, targetPose, result, itr_counter);
-            unsigned long duration = micros() - startTime;
-            
-            // Optional: Print back to the terminal (Python will ignore this)
-            Serial.printf("Target Received: X=%.4f, Y=%.4f | Time: %lu us | angle calculated: q1=%.4f, q2=%.4f in %d iterations\n", target_x, target_y, duration, result.q1, result.q2, itr_counter);
-            
-            // TODO: Command your stepper motors to move to result.q1 and result.q2
-            stepper1->moveTo(result.q1 * J1_STEPS_PER_DEG);
-            stepper2->moveTo(result.q2 * J2_STEPS_PER_DEG);
+            targetPoseCart.x = target_x;
+            targetPoseCart.y = target_y;
+            degToRad(currentPoseJ);
+            evalTrig(currentPoseJ, trigCache1);
+            handleRuckigTargetUpdate(targetPoseCart, trigCache1);
+            Serial.printf("Target Received: X=%.4f, Y=%.4f\n", target_x, target_y);
+            std::cout << "t,q1,q2,q1dot,q2dot,q1ddot,q2ddot" << std::endl;
         }
     }
     
-    // Call your engine/stepper run routines here continuously
-    // engine.run();
+    unsigned long loopStartTime = micros();
+    
+    handleRuckigLoop();
+    t += 0.005f; 
+
+    // Wait for exactly 5ms (5000 us) to pass since loopStartTime
+    while (micros() - loopStartTime < 5000) {
+        // Yield to let ESP32 handle WiFi/background tasks if needed
+        yield(); 
+    }
+
+
+
+
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+void handleRuckigLoop()
+{
+    // Loop following
+    // ruck.update()
+    ruck.update(input,output);
+    
+    
+    // Get output.new_pose
+    targetPoseIntermediateCart.x = output.new_position[0];
+    targetPoseIntermediateCart.y = output.new_position[1];
+    // run inv kinematics to get target joint angles for that tcp pose
+    currentPoseJ.q1 = stepper1-> getCurrentPosition() / J1_STEPS_PER_DEG;
+    currentPoseJ.q2 = stepper2-> getCurrentPosition() / J2_STEPS_PER_DEG;
+    getInverseKinematics(currentPoseJ, &targetPoseIntermediateCart, &targetPoseIntermediateJ,invKinItrTracker, trigCache1);
+
+    // 1. Get the current and target steps for Joint 1
+    long current_steps_1 = stepper1->getCurrentPosition();
+    long target_steps_1 = targetPoseIntermediateJ.q1 * J1_STEPS_PER_DEG;
+    long steps_to_go_1 = target_steps_1 - current_steps_1;
+
+    long current_steps_2    = stepper2->getCurrentPosition();
+    long target_steps_2     = targetPoseIntermediateJ.q2 * J2_STEPS_PER_DEG;
+    long steps_to_go_2      = target_steps_2 - current_steps_2;
+
+    // 2. Calculate required speed to arrive in exactly 5ms (0.005s)
+    // Dividing by 0.005 is the same as multiplying by 200
+    uint32_t required_hz_1 = abs(steps_to_go_1) * 200;
+    uint32_t required_hz_2 = abs(steps_to_go_2) * 200;
+
+    // 3. Command the motor (Only update if it actually needs to move)
+    if (required_hz_1 > 0) {
+        stepper1->setSpeedInHz(required_hz_1);
+        stepper1->moveTo(target_steps_1);
+    }
+    if (required_hz_2 > 0) {
+        stepper2->setSpeedInHz(required_hz_2);
+        stepper2->moveTo(target_steps_2);
+    }
+
+
+
+    std::cout << t << "," << targetPoseIntermediateJ.q1 << "," << targetPoseIntermediateJ.q2 <<  "," << output.new_velocity[0] << "," << output.new_velocity[1] << "," << output.new_acceleration[0] << "," << output.new_acceleration[1] << std::endl;
+
+    output.pass_to_input(input);
+    // move steppers to those joint angles using moveto
+    // wait(non blocking) for 5ms. 
 }

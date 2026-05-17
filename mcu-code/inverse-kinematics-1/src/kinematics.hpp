@@ -5,8 +5,8 @@
 
 #define L1 0.110356
 #define L2 0.143077
-#define FK_ITERATIONS 30
-#define FK_TOLERANCE 0.0001
+#define FK_ITERATIONS 100
+#define FK_TOLERANCE 0.000001
 #define FK_STEP_SIZE 1.0
 
 #define LUT_SIZE 3600
@@ -27,7 +27,7 @@ struct Jacobian {
     float j21, j22;
 };
 
-struct pose{
+struct Pose{
     float x, y;
 };
 
@@ -72,27 +72,27 @@ inline float normalizeAngle(float rad) {
     if (rad < 0.0f) rad += 2.0f * M_PI;
     return rad - M_PI;
 }
-
-inline void evalTrig (Joints& q, TrigCache& t)
+// Feed joint angles in radians
+inline void evalTrig (Joints& q, TrigCache& t_result_container)
 {
     // 1. Convert internal radians to degrees locally just for the lookup table
     float deg1 = q.q1 * (180.0f / M_PI);
     float deg2 = q.q2 * (180.0f / M_PI);
 
     // 2. Feed degrees into the LUT
-    t.s1 = fast_sin(deg1);
-    t.c1 = fast_cos(deg1);
-    t.s2 = fast_sin(deg2);
-    t.c2 = fast_cos(deg2);
+    t_result_container.s1 = fast_sin(deg1);
+    t_result_container.c1 = fast_cos(deg1);
+    t_result_container.s2 = fast_sin(deg2);
+    t_result_container.c2 = fast_cos(deg2);
     
     // 3. Fast multiplication identities
-    t.s12 = (t.s1 * t.c2) + (t.c1 * t.s2);
-    t.c12 = (t.c1 * t.c2) - (t.s1 * t.s2);
+    t_result_container.s12 = (t_result_container.s1 * t_result_container.c2) + (t_result_container.c1 * t_result_container.s2);
+    t_result_container.c12 = (t_result_container.c1 * t_result_container.c2) - (t_result_container.s1 * t_result_container.s2);
 }
-inline void ForwardKinematics(const TrigCache& t, pose& pose)
+inline void ForwardKinematics(const TrigCache& t, Pose& pose_result_container)
 {   
-    pose.x = L1 * t.c1 + L2 * t.c12;
-    pose.y = L1 * t.s1 + L2 * t.s12;
+    pose_result_container.x = L1 * t.c1 + L2 * t.c12;
+    pose_result_container.y = L1 * t.s1 + L2 * t.s12;
 }
 
 // Inverted the Jacobean in Matlab and hardcoding the formula for maximum speed
@@ -107,24 +107,23 @@ inline void invJacobean(Jacobian& J, const TrigCache& t)
     J.j22 = -63.3f * (0.143f * t.s12 + 0.11f * t.s1) * inv_s2;
 }
 
-inline void getInverseKinematics(Joints startConfig, pose targetPose, Joints& result, int& iterations)
+// Feed start config in degrees
+inline void getInverseKinematics(Joints startJointConfig, Pose* targetPoseCart, Joints* resultContainer, int& iterations, TrigCache t1) 
 {
-    pose p1;
-    TrigCache t1;
+    Pose p1;
     Jacobian j;
-    startConfig.q1 = startConfig.q1 * (M_PI / 180.0f); // Convert to radians
-    startConfig.q2 = startConfig.q2 * (M_PI / 180.0f); // Convert to radians
+    startJointConfig.q1 = startJointConfig.q1 * (M_PI / 180.0f); // Convert to radians
+    startJointConfig.q2 = startJointConfig.q2 * (M_PI / 180.0f); // Convert to radians
     
-
-    evalTrig(startConfig, t1); // Cache all the trig values for efficiency
+    evalTrig(startJointConfig, t1);
     // Serial.printf("Trig Cache: s1 = %f, c1 = %f, s2 = %f, c2 = %f, s12 = %f, c12 = %f\n", t1.s1, t1.c1, t1.s2, t1.c2, t1.s12, t1.c12);
     ForwardKinematics(t1, p1); // Get the current end effector pose
     // Serial.printf("Initial Pose after FK: x = %f, y = %f\n", p1.x, p1.y);
 
     // Calculate the error between current pose and target pose
-    pose error;
-    error.x = targetPose.x - p1.x;
-    error.y = targetPose.y - p1.y;
+    Pose error;
+    error.x = targetPoseCart->x - p1.x;
+    error.y = targetPoseCart->y - p1.y;
 
     float delta_q1, delta_q2;
     int itr = 0;
@@ -134,21 +133,30 @@ inline void getInverseKinematics(Joints startConfig, pose targetPose, Joints& re
         invJacobean(j, t1); 
         delta_q1 = j.j11 * error.x + j.j12 * error.y;
         delta_q2 = j.j21 * error.x + j.j22 * error.y;
-        startConfig.q1 += FK_STEP_SIZE * delta_q1;
-        startConfig.q2 += FK_STEP_SIZE * delta_q2;
-        startConfig.q1 = normalizeAngle(startConfig.q1);
-        startConfig.q2 = normalizeAngle(startConfig.q2);
-        evalTrig(startConfig, t1);
+        startJointConfig.q1 += FK_STEP_SIZE * delta_q1;
+        startJointConfig.q2 += FK_STEP_SIZE * delta_q2;
+        startJointConfig.q1 = normalizeAngle(startJointConfig.q1);
+        startJointConfig.q2 = normalizeAngle(startJointConfig.q2);
+        evalTrig(startJointConfig, t1);
         ForwardKinematics(t1, p1);
 
-        error.x = targetPose.x - p1.x;
-        error.y = targetPose.y - p1.y;
+        error.x = targetPoseCart->x - p1.x;
+        error.y = targetPoseCart->y - p1.y;
         itr++;
     }
-    result.q1 = startConfig.q1 * (180.0f / M_PI); // Convert back to degrees
-    result.q2 = startConfig.q2 * (180.0f / M_PI); // Convert back to degrees
+    resultContainer->q1 = startJointConfig.q1 * (180.0f / M_PI); // Convert back to degrees
+    resultContainer->q2 = startJointConfig.q2 * (180.0f / M_PI); // Convert back to degrees
     iterations = itr;
-    // Serial.printf("Final Joint Angles after %d iterations: q1 = %f, q2 = %f\n", itr, result.q1, result.q2);
+    // Serial.printf("Final Joint Angles after %d iterations: q1 = %f, q2 = %f\n", itr, resultContainer->q1, resultContainer->q2);
     // Serial.printf("Final Pose after IK: x = %f, y = %f\n", p1.x, p1.y);
 
 }
+
+inline void degToRad(Joints& j) 
+{
+    j.q1 = j.q1 * (M_PI / 180.0f);
+    j.q2 = j.q2 * (M_PI / 180.0f);
+}
+
+
+
