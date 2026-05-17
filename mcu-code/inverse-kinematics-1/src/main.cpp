@@ -5,6 +5,7 @@
 #include <math.h>
 #include <ArduinoEigen.h>
 #include <ruckig/ruckig.hpp>
+#include <kinematics.hpp>
 
 using namespace ruckig;
 const int DOFs = 2;
@@ -16,8 +17,6 @@ InputParameter<DOFs> input;
 OutputParameter<DOFs> output;
 
 
-const float L1 = 110.4;
-const float L2 = 142.0;
 const int TRAJECTORY_STEPS = 200; // 30 points for 30mm (1mm resolution)
 
 struct Waypoint {
@@ -71,7 +70,7 @@ void setup()
     Serial2.begin(115200, SERIAL_8N1, TMC2_RX, TMC2_TX);
 
     // Initialise
-    delay(500);
+    delay(100);
     Serial.println("\n--- Initializing System ---");
     delay(100);
 
@@ -82,19 +81,36 @@ void setup()
     stepper1 = engine.stepperConnectToPin(J1_STEP_PIN);
     stepper1->setDirectionPin(J1_DIR_PIN, true);
     stepper1->setAutoEnable(true);
-    stepper1->setSpeedInHz(000);      
-    stepper1->setAcceleration(20000);     
+    stepper1->setSpeedInHz(1000);      
+    stepper1->setAcceleration(6000);     
 
 
     stepper2 = engine.stepperConnectToPin(J2_STEP_PIN);
     stepper2->setDirectionPin(J2_DIR_PIN, true);
     stepper2->setAutoEnable(true);
-    stepper2->setSpeedInHz(000);      
-    stepper2->setAcceleration(20000); 
+    stepper2->setSpeedInHz(1000);      
+    stepper2->setAcceleration(5000); 
     // stepper2->runBackward();
-    Serial.println("t, j1_dot, j2_dot");
-    setupRuckig();
-    
+
+    stepper1->moveTo(15*J1_STEPS_PER_DEG);
+    stepper2->moveTo(15*J2_STEPS_PER_DEG);
+    Joints startConfig = {45, 45};
+    Joints result;
+    pose targetPose = {0.078033, 0.1311};
+    initTrigTable(); // Initialize the sine lookup table
+    // start time to calculate IK
+    unsigned long startTime = micros(); // Record start time in microseconds
+    int itr_counter;
+    getInverseKinematics(startConfig, targetPose, result, itr_counter);
+    unsigned long endTime = micros();   // Record end time in microseconds
+
+    unsigned long duration = endTime - startTime;
+
+    // Print the result in microseconds, or convert to milliseconds as a float
+    Serial.printf("IK Calculation Time: %lu us\n", duration);
+    Serial.printf("IK Calculation Time: %.6f ms\n", (float)duration / 1000.0);
+    Serial.printf("Final Joint Angles: q1 = %f, q2 = %f\n", result.q1, result.q2);
+    Serial.printf("Iterations: %d\n", itr_counter);
 }
 
 
@@ -112,88 +128,46 @@ const float J2_MAX = 360;
 
 float t = 0;
 Result res;
+Joints startConfig = {0, 0}; 
+int itr_counter = 0;
+void loop() 
+{
+    // Wait for incoming serial data from Python
+    if (Serial.available() > 0) 
+    {
+        // Check if it's the start of our command format "<"
+        if (Serial.read() == '<') 
+        {
+            // Parse the X and Y floats sent from Python
+            float target_x = Serial.parseFloat();
+            Serial.read(); // Consume the comma ','
+            float target_y = Serial.parseFloat();
+            
+            // Consume the closing bracket or newline
+            while(Serial.read() != '\n' && Serial.available()) {} 
 
-void loop() {
-
-  while (Serial.available()) {
-    char c = Serial.read();
-
-    if (c == '\n') {
-      int commaIndex = inputString.indexOf(',');
-
-      if (commaIndex > 0) {
-        String j1_str = inputString.substring(0, commaIndex);
-        String j2_str = inputString.substring(commaIndex + 1);
-
-        j1_angle = j1_str.toFloat();
-        j2_angle = j2_str.toFloat();
-
-        // Apply limits
-        j1_angle = constrain(j1_angle, J1_MIN, J1_MAX);
-        // j2_angle = constrain(j2_angle, J2_MIN, J2_MAX);
-
-        // Serial.print("J1: ");
-        // Serial.print(j1_angle);
-
-        // Serial.print("  J2: ");
-        // Serial.println(j2_angle);
-
-        input.target_position = {j1_angle/360, j2_angle/360};
-      }
-
-      inputString = "";
-    }
-    else {
-      inputString += c;
-    }
-  }
-
-
-    res = ruck.update(input, output);
-
-    if (res == Result::Working) {
-        t += 0.01;
-        
-        // 2. CONVERT REVOLUTIONS BACK TO DEGREES FOR THE MOTORS
-        // Multiply Ruckig's output by 360.0 to get Deg/sec, then by Steps/Deg
-        float j1_velocity = (output.new_velocity[0] * 360.0) * J1_STEPS_PER_DEG;
-        float j2_velocity = (output.new_velocity[1] * 360.0) * J2_STEPS_PER_DEG;
-
-        // --- JOINT 1 ---
-        // CRITICAL: Must use abs() in deadband so negative speeds don't trigger a stop!
-        if (abs(j1_velocity) < 0.1) {
-            stepper1->stopMove();
-        } else {
-            stepper1->setSpeedInHz(abs(j1_velocity));
-            if (j1_velocity > 0) stepper1->runForward();
-            else stepper1->runBackward();
+            // Create our target pose
+            pose targetPose = {target_x, target_y};
+            
+            // Run the incredibly fast IK solver!
+            Joints result;
+            // You can set this to the current joint angles if you have that info
+            startConfig.q1 = stepper1->getCurrentPosition() / J1_STEPS_PER_DEG;
+            startConfig.q2 = stepper2->getCurrentPosition() / J2_STEPS_PER_DEG;
+            Serial.printf("Current Joint Angles: q1 = %f, q2 = %f\n", startConfig.q1, startConfig.q2);
+            unsigned long startTime = micros();
+            getInverseKinematics(startConfig, targetPose, result, itr_counter);
+            unsigned long duration = micros() - startTime;
+            
+            // Optional: Print back to the terminal (Python will ignore this)
+            Serial.printf("Target Received: X=%.4f, Y=%.4f | Time: %lu us | angle calculated: q1=%.4f, q2=%.4f in %d iterations\n", target_x, target_y, duration, result.q1, result.q2, itr_counter);
+            
+            // TODO: Command your stepper motors to move to result.q1 and result.q2
+            stepper1->moveTo(result.q1 * J1_STEPS_PER_DEG);
+            stepper2->moveTo(result.q2 * J2_STEPS_PER_DEG);
         }
-
-        // --- JOINT 2 ---
-        if (abs(j2_velocity) < 0.1) {
-            stepper2->stopMove();
-        } else {
-            stepper2->setSpeedInHz(abs(j2_velocity));
-            if (j2_velocity > 0) stepper2->runForward();
-            else stepper2->runBackward();
-        }
-        
-        Serial.printf("%f,%f,%f\n", t, j1_velocity, j2_velocity);
-        output.pass_to_input(input);
-        
-    } else if (res == Result::Finished) {
-        static unsigned long lastPrint = 0;
-        if (millis() - lastPrint > 1000) {
-            Serial.println("Result::Finished - Target reached!");
-            lastPrint = millis();
-        }
-        stepper1->stopMove();
-        stepper2->stopMove();
-    } else {
-        Serial.printf("Ruckig Error Code: %d\n", (int)res);
-        delay(1000); 
     }
-
-    // 10ms cycle time
-    delayMicroseconds(10000); 
+    
+    // Call your engine/stepper run routines here continuously
+    // engine.run();
 }
