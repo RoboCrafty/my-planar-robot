@@ -10,9 +10,9 @@ inline OutputParameter<DOFs> output;
 
 inline void setupRuckig() 
 {
-    input.max_velocity = {0.25, 0.25};       
-    input.max_acceleration = {2.0, 2.0}; 
-    input.max_jerk = {25.0,25.0};         
+    input.max_velocity = {0.50, 0.50};       
+    input.max_acceleration = {1.0, 2.0}; 
+    input.max_jerk = {5.0,10.0};         
 
     input.current_position = {0.0, 0.0};
     input.current_velocity = {0.0, 0.0};
@@ -23,7 +23,7 @@ inline void setupRuckig()
     input.target_velocity = {0.0, 0.0}; 
     input.target_acceleration = {0.0, 0.0};
     
-    input.synchronization = ruckig::Synchronization::Time;
+    input.synchronization = ruckig::Synchronization::Phase;
 
     // Validation Check...
     try {

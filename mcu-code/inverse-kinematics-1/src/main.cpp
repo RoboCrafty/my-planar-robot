@@ -48,7 +48,7 @@ void setup()
 
 
     stepper2 = engine.stepperConnectToPin(J2_STEP_PIN);
-    stepper2->setDirectionPin(J2_DIR_PIN, true);
+    stepper2->setDirectionPin(J2_DIR_PIN, false);
     stepper2->setAutoEnable(true);
     stepper2->setSpeedInHz(6000);      
     stepper2->setAcceleration(6000); 
@@ -160,7 +160,7 @@ void handleRuckigLoop() {
     currentPoseJ.q1 = stepper1-> getCurrentPosition() / J1_STEPS_PER_DEG;
     currentPoseJ.q2 = stepper2-> getCurrentPosition() / J2_STEPS_PER_DEG;
     getInverseKinematics(currentPoseJ, &targetPoseIntermediateCart, &targetPoseIntermediateJ, invKinItrTracker, trigCache1);  
-    std::cout << t << "," << targetPoseIntermediateJ.q1 << "," << targetPoseIntermediateJ.q2 <<  "," << output.new_velocity[0] << "," << output.new_velocity[1] << "," << output.new_acceleration[0] << "," << output.new_acceleration[1] << std::endl;
+    // std::cout << t << "," << targetPoseIntermediateJ.q1 << "," << targetPoseIntermediateJ.q2 <<  "," << output.new_velocity[0] << "," << output.new_velocity[1] << "," << output.new_acceleration[0] << "," << output.new_acceleration[1] << std::endl;
     t+=0.005;
     // 2. Calculate deltas  
     int32_t new_target_steps_1 = targetPoseIntermediateJ.q1 * J1_STEPS_PER_DEG;  

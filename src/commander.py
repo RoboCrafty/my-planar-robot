@@ -8,10 +8,10 @@ import math
 # --- CONFIGURATION ---
 L1 = 0.110356
 L2 = 0.143077
-SERIAL_PORT = '/dev/cu.usbserial-0001'
+SERIAL_PORT = '/dev/cu.wchusbserial210'  # Update this to your actual serial port
 BAUD_RATE = 115200
 SEND_RATE_HZ = 1     # Limit how fast we spam the serial port (manual drag)
-LOOP_DELAY_MS = 2000  # How long to wait between points in automatic loop mode (1000 ms = 1 sec)
+LOOP_DELAY_MS = 3000  # How long to wait between points in automatic loop mode (1000 ms = 1 sec)
 
 # Initialize Serial
 try:

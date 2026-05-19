@@ -8,20 +8,20 @@
 
 // ================= JOINT DEFINITIONS =================
 // Joint 1 
-#define J1_STEP_PIN 14
-#define J1_DIR_PIN  27
+#define J1_STEP_PIN 13
+#define J1_DIR_PIN  12
 
 // Joint 2 
-#define J2_STEP_PIN 26
-#define J2_DIR_PIN  25
+#define J2_STEP_PIN 14
+#define J2_DIR_PIN  27
 
 
 // ================= UART Driver Addresses =================
 
-#define J1_ADDRESS 0b11
-#define J2_ADDRESS 0b10
+#define J1_ADDRESS 0b01
+#define J2_ADDRESS 0b00
 
-#define R_SENSE 0.11f // Match to your driver
+#define R_SENSE 0.10f // Match to your driver
 
 #define SERIAL_PORT1 Serial2
 
@@ -35,16 +35,16 @@ extern TMC2209Stepper J1_driver;
 extern TMC2209Stepper J2_driver;
 
 // =============== Constants and Macros ===============
-#define J1_CURRENT 1400
-#define J2_CURRENT 1400
+#define J1_CURRENT 1200
+#define J2_CURRENT 1200
 
 
 #define J1_HOLD_MULTIPLIER 0.6
 #define J2_HOLD_MULTIPLIER 0.6
 
 
-#define J1_TPWMTHRS 1000
-#define J2_TPWMTHRS 1000
+#define J1_TPWMTHRS 100
+#define J2_TPWMTHRS 100
 
 
 #define J1_MICOSTEPS 8
